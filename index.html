@@ -143,9 +143,16 @@
       </div>
       <div class="section-label">電腦難度</div>
       <div class="difficulty-grid">
-        <div class="choice"><input type="radio" id="diffEasy" name="difficulty" value="easy"><label for="diffEasy"><strong>🟢 簡單</strong><span>相當於 v3 普通棋力</span></label></div>
-        <div class="choice"><input type="radio" id="diffNormal" name="difficulty" value="normal" checked><label for="diffNormal"><strong>🟡 普通</strong><span>相當於 v3 困難棋力</span></label></div>
-        <div class="choice"><input type="radio" id="diffHard" name="difficulty" value="hard"><label for="diffHard"><strong>🔴 困難</strong><span>更深搜尋＋更嚴格選棋</span></label></div>
+        <div class="choice"><input type="radio" id="diff1" name="difficulty" value="1"><label for="diff1"><strong>1 · 入門</strong><span>第 1 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff2" name="difficulty" value="2"><label for="diff2"><strong>2 · 初學</strong><span>第 2 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff3" name="difficulty" value="3"><label for="diff3"><strong>3 · 輕鬆</strong><span>第 3 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff4" name="difficulty" value="4"><label for="diff4"><strong>4 · 基礎</strong><span>第 4 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff5" name="difficulty" value="5" checked><label for="diff5"><strong>5 · 普通</strong><span>第 5 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff6" name="difficulty" value="6"><label for="diff6"><strong>6 · 進階</strong><span>第 6 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff7" name="difficulty" value="7"><label for="diff7"><strong>7 · 挑戰</strong><span>第 7 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff8" name="difficulty" value="8"><label for="diff8"><strong>8 · 困難</strong><span>第 8 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff9" name="difficulty" value="9"><label for="diff9"><strong>9 · 高階</strong><span>第 9 級／共 10 級</span></label></div>
+        <div class="choice"><input type="radio" id="diff10" name="difficulty" value="10"><label for="diff10"><strong>10 · 最強</strong><span>第 10 級／共 10 級</span></label></div>
       </div>
     </div>
     <div class="setup-actions"><button type="submit">開始遊戲</button></div>
@@ -154,13 +161,15 @@
 
 <script>
 (() => {
+  const engineSource=document.currentScript.textContent;
+  let aiWorker=null;
   const canvas=document.getElementById('board'),ctx=canvas.getContext('2d');
   const turnValue=document.getElementById('turnValue'),message=document.getElementById('message'),topStatus=document.getElementById('topStatus'),topSub=document.getElementById('topSub'),historyList=document.getElementById('historyList'),undoBtn=document.getElementById('undoBtn'),newGameBtn=document.getElementById('newGameBtn'),setupModal=document.getElementById('setupModal'),setupForm=document.getElementById('setupForm'),computerOptions=document.getElementById('computerOptions'),thinkingOverlay=document.getElementById('thinkingOverlay'),modeText=document.getElementById('modeText'),sideText=document.getElementById('sideText'),difficultyText=document.getElementById('difficultyText'),handicapText=document.getElementById('handicapText'),undoCountText=document.getElementById('undoCountText'),pvpOptions=document.getElementById('pvpOptions'),handicapSideSelect=document.getElementById('handicapSideSelect'),handicapPieceSelect=document.getElementById('handicapPieceSelect'),winnerOverlay=document.getElementById('winnerOverlay'),winnerTitle=document.getElementById('winnerTitle'),winnerReason=document.getElementById('winnerReason'),rematchBtn=document.getElementById('rematchBtn'),winnerSetupBtn=document.getElementById('winnerSetupBtn'),winnerIcon=document.getElementById('winnerIcon');
   const ROWS=10,COLS=9,RED='red',BLACK='black';
   const coarsePointer=window.matchMedia&&window.matchMedia('(pointer:coarse)').matches;
   const pieceText={red:{rook:'車',horse:'馬',elephant:'相',advisor:'仕',king:'帥',cannon:'炮',pawn:'兵'},black:{rook:'車',horse:'馬',elephant:'象',advisor:'士',king:'將',cannon:'炮',pawn:'卒'}};
   const PIECE_VALUE={king:100000,rook:900,cannon:450,horse:420,elephant:200,advisor:200,pawn:100};
-  let board,turn,selected,legalMoves,moveHistory,positionHistory,gameOver,gameMode='pvp',playerSide=RED,aiSide=BLACK,difficulty='normal',aiStyle='balanced',handicapSide='none',handicapPiece='leftRook',boardFlipped=false,undoRemaining=5,aiThinking=false,aiAnimating=false,aiTimer=null,aiAnimation=null,aiAnimationFrame=null,lastAiDepth=0,lastAiSource='search';
+  let board,turn,selected,legalMoves,moveHistory,positionHistory,gameOver,gameMode='pvp',playerSide=RED,aiSide=BLACK,difficulty=5,aiStyle='balanced',handicapSide='none',handicapPiece='leftRook',boardFlipped=false,undoRemaining=5,aiThinking=false,aiAnimating=false,aiTimer=null,aiAnimation=null,aiAnimationFrame=null,lastAiDepth=0,lastAiSource='search';
   const UNDO_LIMIT=5;
 
   function piece(type,side,id){return{type,side,id}}
@@ -344,10 +353,22 @@
     if(gameMode==='pvc'&&!gameOver&&turn===aiSide)scheduleAiMove();
   }
 
-  // ===== AI Engine v3 =====
-  // 目標：不只是搜尋更深，也要避免每一局都走同一條路。
   const SEARCH_TIMEOUT={};
+  const AI_LEVELS=[
+    {time:60,maxDepth:1,q:0,error:500,book:0},
+    {time:100,maxDepth:1,q:0,error:320,book:0},
+    {time:160,maxDepth:2,q:1,error:210,book:.15},
+    {time:250,maxDepth:2,q:2,error:130,book:.3},
+    {time:400,maxDepth:3,q:3,error:75,book:.45},
+    {time:650,maxDepth:4,q:4,error:40,book:.6},
+    {time:1000,maxDepth:5,q:5,error:22,book:.7},
+    {time:1500,maxDepth:6,q:6,error:12,book:.8},
+    {time:2200,maxDepth:7,q:7,error:5,book:.9},
+    {time:3200,maxDepth:8,q:8,error:0,book:1}
+  ];
+  const levelConfig=()=>AI_LEVELS[difficulty-1]||AI_LEVELS[4];
   let searchDeadline=Infinity,searchNodes=0,transpositionTable=new Map();
+  let searchPath=new Map(),searchIteration=1;
 
   function styleParams(){
     if(aiStyle==='aggressive')return{attack:1.34,safety:.82,variety:1.25};
@@ -436,10 +457,26 @@
     if(!findKing(b,other(perspective)))return 999999;
     const sp=styleParams();
     let score=0,myActivity=0,oppActivity=0;
+    let material=0;
+    for(const row of b)for(const p of row)if(p&&['rook','horse','cannon'].includes(p.type))material++;
+    const endgame=1-Math.min(1,material/12);
 
     for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
       const p=b[r][c];if(!p)continue;
       let v=PIECE_VALUE[p.type]+positionalBonus(p,r,c);
+      const advance=p.side===RED?9-r:r;
+      if(p.type==='horse')v+=endgame*65;
+      if(p.type==='cannon')v-=endgame*70;
+      if(p.type==='pawn'){
+        if(crossedRiver(p.side,r))v+=endgame*55;
+        if(r===0||r===9)v-=65;
+        for(const dc of [-1,1]){
+          const q=b[r][c+dc];
+          if(q&&q.side===p.side&&q.type==='pawn')v+=18;
+        }
+      }
+      if(p.type==='rook'&&advance>0)v+=(1-endgame)*22;
+      if(p.type==='horse'&&advance>=2)v+=(1-endgame)*18;
       const act=pieceActivity(b,r,c,p);
       if(p.type==='rook')v+=act*4;
       else if(p.type==='horse')v+=act*5;
@@ -470,92 +507,74 @@
 
   function orderedMoves(b,side,limit=Infinity,tacticalOnly=false){
     let moves=generateAllMoves(b,side);
-    if(tacticalOnly){
-      moves=moves.filter(m=>{
-        if(m.captured)return true;
-        const nb=simulateMove(b,m.from,m.to);
-        return findKing(nb,other(side))&&isInCheck(nb,other(side));
-      });
-    }
-    moves.sort((a,z)=>moveTacticalScore(b,z,side)-moveTacticalScore(b,a,side));
-    return moves.slice(0,limit);
+    if(tacticalOnly)moves=moves.filter(m=>m.captured);
+    return moves.map(move=>({move,score:moveTacticalScore(b,move,side)}))
+      .sort((a,z)=>z.score-a.score).slice(0,limit).map(x=>x.move);
   }
 
   function checkSearchTime(){
     searchNodes++;
-    if((searchNodes&255)===0&&performance.now()>searchDeadline)throw SEARCH_TIMEOUT;
+    if(performance.now()>searchDeadline)throw SEARCH_TIMEOUT;
   }
 
-  function quiescence(b,alpha,beta,maxSide,sideToMove,qDepth){
+  function quiescence(b,alpha,beta,maxSide,sideToMove,qDepth,ply=0){
     checkSearchTime();
+    if(!findKing(b,sideToMove))return sideToMove===maxSide?-900000+ply:900000-ply;
+    const moves=orderedMoves(b,sideToMove);
+    if(!moves.length)return sideToMove===maxSide?-900000+ply:900000-ply;
+    const checked=isInCheck(b,sideToMove),maximizing=sideToMove===maxSide;
     const stand=evaluateBoard(b,maxSide);
-    if(qDepth<=0)return stand;
-    const maximizing=sideToMove===maxSide;
-
-    if(maximizing){
-      if(stand>=beta)return stand;
-      if(stand>alpha)alpha=stand;
-      const moves=orderedMoves(b,sideToMove,8,true);
-      let best=stand;
-      for(const mv of moves){
-        const val=quiescence(simulateMove(b,mv.from,mv.to),alpha,beta,maxSide,other(sideToMove),qDepth-1);
-        if(val>best)best=val;
-        if(best>alpha)alpha=best;
-        if(alpha>=beta)break;
-      }
-      return best;
-    }else{
-      if(stand<=alpha)return stand;
-      if(stand<beta)beta=stand;
-      const moves=orderedMoves(b,sideToMove,8,true);
-      let best=stand;
-      for(const mv of moves){
-        const val=quiescence(simulateMove(b,mv.from,mv.to),alpha,beta,maxSide,other(sideToMove),qDepth-1);
-        if(val<best)best=val;
-        if(best<beta)beta=best;
-        if(alpha>=beta)break;
-      }
-      return best;
+    if(qDepth<=0&&!checked)return stand;
+    if(ply>=24)return stand;
+    let best=checked?(maximizing?-Infinity:Infinity):stand;
+    if(!checked){
+      if(maximizing){if(best>=beta)return best;alpha=Math.max(alpha,best)}
+      else{if(best<=alpha)return best;beta=Math.min(beta,best)}
     }
+    for(const mv of moves){
+      if(!checked&&!mv.captured)continue;
+      const nb=simulateMove(b,mv.from,mv.to),key=positionKey(nb,other(sideToMove));
+      const count=(searchPath.get(key)||0);
+      let value;
+      if(count>=2)value=0;
+      else{
+        searchPath.set(key,count+1);
+        try{value=quiescence(nb,alpha,beta,maxSide,other(sideToMove),qDepth-1,ply+1)}
+        finally{if(count)searchPath.set(key,count);else searchPath.delete(key)}
+      }
+      best=maximizing?Math.max(best,value):Math.min(best,value);
+      if(maximizing)alpha=Math.max(alpha,best);else beta=Math.min(beta,best);
+      if(alpha>=beta)break;
+    }
+    return best;
   }
 
-  function minimax(b,depth,alpha,beta,maxSide,sideToMove){
+  function minimax(b,depth,alpha,beta,maxSide,sideToMove,ply=0){
     checkSearchTime();
-    if(!findKing(b,maxSide))return-999999-depth;
-    if(!findKing(b,other(maxSide)))return 999999+depth;
-    if(depth===0)return quiescence(b,alpha,beta,maxSide,sideToMove,difficulty==='hard'?3:2);
-
-    const ttKey=positionKey(b,sideToMove)+'|d'+depth+'|m'+maxSide;
-    const cached=transpositionTable.get(ttKey);
-    if(cached!==undefined)return cached;
-
-    const limit=depth>=4?20:depth>=2?26:32;
-    const moves=orderedMoves(b,sideToMove,limit,false);
-    if(!moves.length)return sideToMove===maxSide?-900000-depth:900000+depth;
-
-    let exact=true;
-    if(sideToMove===maxSide){
-      let best=-Infinity;
+    if(!findKing(b,sideToMove))return sideToMove===maxSide?-900000+ply:900000-ply;
+    const key=positionKey(b,sideToMove),count=searchPath.get(key)||0;
+    if(count>=2)return 0;
+    searchPath.set(key,count+1);
+    try{
+      if(depth<=0)return quiescence(b,alpha,beta,maxSide,sideToMove,(searchIteration===1?0:levelConfig().q),ply);
+      const moves=orderedMoves(b,sideToMove);
+      if(!moves.length)return sideToMove===maxSide?-900000+ply:900000-ply;
+      const hint=transpositionTable.get(key);
+      if(hint){const i=moves.findIndex(m=>moveSignature(m)===hint);if(i>0)moves.unshift(moves.splice(i,1)[0])}
+      const maximizing=sideToMove===maxSide;
+      let best=maximizing?-Infinity:Infinity,bestMove=null;
       for(const mv of moves){
-        const val=minimax(simulateMove(b,mv.from,mv.to),depth-1,alpha,beta,maxSide,other(sideToMove));
-        if(val>best)best=val;
-        if(best>alpha)alpha=best;
-        if(beta<=alpha){exact=false;break}
+        const value=minimax(simulateMove(b,mv.from,mv.to),depth-1,alpha,beta,maxSide,other(sideToMove),ply+1);
+        if(bestMove===null||(maximizing?value>best:value<best)){best=value;bestMove=mv}
+        if(maximizing)alpha=Math.max(alpha,best);else beta=Math.min(beta,best);
+        if(alpha>=beta)break;
       }
-      if(exact)transpositionTable.set(ttKey,best);
+      if(bestMove)transpositionTable.set(key,moveSignature(bestMove));
       return best;
-    }else{
-      let best=Infinity;
-      for(const mv of moves){
-        const val=minimax(simulateMove(b,mv.from,mv.to),depth-1,alpha,beta,maxSide,other(sideToMove));
-        if(val<best)best=val;
-        if(best<beta)beta=best;
-        if(beta<=alpha){exact=false;break}
-      }
-      if(exact)transpositionTable.set(ttKey,best);
-      return best;
-    }
+    }finally{if(count)searchPath.set(key,count);else searchPath.delete(key)}
   }
+
+  function moveSignature(m){return `${m.from.r},${m.from.c}-${m.to.r},${m.to.c}`}
 
   // --- Opening Book ---
   // 不是強迫固定開局，而是同一局面可有多個合理候選，按權重抽選。
@@ -565,10 +584,10 @@
       [7,1,7,4],[0,7,2,6],[9,1,7,2],[0,8,0,7],[6,2,5,2],[3,6,4,6]
     ],
     [
-      [9,2,7,4],[0,2,2,4],[9,1,7,2],[0,1,2,2],[7,7,7,4],[2,1,2,4]
+      [9,2,7,4],[0,2,2,4],[9,1,7,2],[0,1,2,2],[7,7,6,7],[2,1,3,1]
     ],
     [
-      [6,2,5,2],[3,2,4,2],[9,1,7,2],[0,1,2,2],[7,1,7,4],[2,7,2,4]
+      [6,2,5,2],[3,2,4,2],[9,1,7,2],[0,1,2,2],[7,7,7,4],[2,7,2,4]
     ],
     [
       [9,1,7,2],[0,7,2,6],[6,6,5,6],[3,6,4,6],[9,2,7,4],[0,2,2,4]
@@ -619,97 +638,79 @@
     return{from:{...x.from},to:{...x.to},piece:b[x.from.r][x.from.c],captured:b[x.to.r][x.to.c]};
   }
 
-  function chooseEasyMove(b,side){
-    const book=chooseOpeningMove(b,side);
-    if(book&&Math.random()<.72){lastAiDepth=0;lastAiSource='book';return book}
-    const moves=playableRootMoves(b,side);if(!moves.length)return null;
-    const scored=moves.map(m=>{
-      const nb=simulateMove(b,m.from,m.to);
-      let s=Math.random()*210-repetitionPenalty(nb,other(side));
-      if(m.captured)s+=PIECE_VALUE[m.captured.type]*.82;
-      if(findKing(nb,other(side))&&isInCheck(nb,other(side)))s+=95;
-      if(m.piece.type==='pawn'&&crossedRiver(side,m.to.r))s+=36;
-      return{m,s};
-    }).sort((a,z)=>z.s-a.s);
-    const pool=scored.slice(0,Math.min(7,scored.length));
-    const weights=[34,24,16,11,7,5,3].slice(0,pool.length);
-    let total=weights.reduce((a,z)=>a+z,0),x=Math.random()*total;
-    for(let i=0;i<pool.length;i++){x-=weights[i];if(x<=0){lastAiDepth=1;lastAiSource='search';return pool[i].m}}
-    return pool[0].m;
-  }
-
   function selectNearBest(scored){
     scored.sort((a,z)=>z.score-a.score);
-    const best=scored[0].score,sp=styleParams();
-    const base=difficulty==='hard'?8:difficulty==='normal'?18:42;
-    const threshold=base*sp.variety;
-    const pool=scored.filter(x=>best-x.score<=threshold).slice(0,6);
-    const temperature=Math.max(6,threshold*.55);
-    let total=0;
-    const weighted=pool.map(x=>{
-      const w=Math.exp((x.score-best)/temperature);
-      total+=w;return{x,w};
-    });
-    let pick=Math.random()*total;
-    for(const item of weighted){pick-=item.w;if(pick<=0)return item.x.move}
-    return weighted[0].x.move;
+    const best=scored[0].score,threshold=levelConfig().error;
+    if(!threshold||Math.abs(best)>800000)return scored[0].move;
+    const pool=scored.filter(x=>best-x.score<=threshold);
+    const weights=pool.map(x=>Math.exp((x.score-best)/Math.max(1,threshold*.55)));
+    let pick=Math.random()*weights.reduce((a,b)=>a+b,0);
+    for(let i=0;i<pool.length;i++){pick-=weights[i];if(pick<=0)return pool[i].move}
+    return pool[0].move;
   }
 
   function chooseSearchMoveTimed(b,side){
-    const book=chooseOpeningMove(b,side);
-    if(book){
-      // 困難模式也不會每次固定走同一條開局，但大部分時間會採用合理開局庫。
-      const useChance=difficulty==='hard'?.84:.76;
-      if(Math.random()<useChance){lastAiDepth=0;lastAiSource='book';return book}
-    }
-
-    const config=difficulty==='hard'
-      ?{time:1650,maxDepth:6,rootLimit:36}
-      :difficulty==='normal'
-        ?{time:920,maxDepth:5,rootLimit:32}
-        :{time:400,maxDepth:4,rootLimit:28};
-
+    const config=levelConfig();
     searchDeadline=performance.now()+config.time;
-    searchNodes=0;
-    transpositionTable=new Map();
-
-    const rootMoves=orderedMoves(b,side,Infinity,false)
-      .filter(m=>!isForbiddenRepeatMove(b,side,m.from,m.to))
-      .slice(0,config.rootLimit);
+    searchNodes=0;transpositionTable=new Map();searchPath=new Map();
+    const rootMoves=orderedMoves(b,side).filter(m=>!isForbiddenRepeatMove(b,side,m.from,m.to));
     if(!rootMoves.length)return null;
-
-    let completed=null,completedDepth=0;
-
+    let completed=rootMoves.map(move=>({move,score:evaluateBoard(simulateMove(b,move.from,move.to),side)}));
+    let completedDepth=0;
     for(let depth=1;depth<=config.maxDepth;depth++){
+      searchIteration=depth;
       const current=[];
+      rootMoves.sort((a,z)=>completed.find(x=>moveSignature(x.move)===moveSignature(z)).score-completed.find(x=>moveSignature(x.move)===moveSignature(a)).score);
       try{
         for(const mv of rootMoves){
           checkSearchTime();
           const nb=simulateMove(b,mv.from,mv.to);
-          let score=minimax(nb,depth-1,-Infinity,Infinity,side,other(side));
-          score-=repetitionPenalty(nb,other(side));
-          // 只在根節點加極少量噪音；真正明顯較好的棋仍會勝出。
-          score+=Math.random()*(difficulty==='hard'?.55:difficulty==='normal'?1.2:2.5);
+          const score=minimax(nb,depth-1,-Infinity,Infinity,side,other(side),1)-repetitionPenalty(nb,other(side));
           current.push({move:mv,score});
         }
-        completed=current;
-        completedDepth=depth;
-      }catch(err){
-        if(err!==SEARCH_TIMEOUT)throw err;
-        break;
-      }
-      if(performance.now()>searchDeadline)break;
+        completed=current;completedDepth=depth;
+      }catch(err){if(err!==SEARCH_TIMEOUT)throw err;break}
+      if(Math.abs(Math.max(...completed.map(x=>x.score)))>800000)break;
     }
-
-    lastAiDepth=completedDepth;
-    lastAiSource='search';
-    if(!completed||!completed.length)return chooseEasyMove(b,side);
+    lastAiDepth=completedDepth;lastAiSource='search';
+    if(completedDepth&&Math.random()<config.book){
+      const book=chooseOpeningMove(b,side);
+      if(book){
+        const entry=completed.find(x=>moveSignature(x.move)===moveSignature(book));
+        const best=Math.max(...completed.map(x=>x.score));
+        if(entry&&best-entry.score<=25){lastAiSource='book';return book}
+      }
+    }
     return selectNearBest(completed);
   }
 
-  function chooseAiMove(){return chooseSearchMoveTimed(board,aiSide);}
+  async function chooseAiMove(){
+    if(typeof Worker==='undefined')return chooseSearchMoveTimed(board,aiSide);
+    let source=engineSource.slice(engineSource.indexOf('  const ROWS'),engineSource.indexOf('  async function chooseAiMove'));
+    source=source.replace(/const coarsePointer=.*?;/,'');
+    source+=`onmessage=({data})=>{
+      board=data.board;aiSide=data.aiSide;difficulty=data.difficulty;aiStyle=data.aiStyle;
+      positionHistory=data.positionHistory;moveHistory=data.moveHistory;
+      try{const move=chooseSearchMoveTimed(board,aiSide);postMessage({move,depth:lastAiDepth,source:lastAiSource})}
+      catch(error){postMessage({error:String(error)})}
+    };`;
+    const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+    try{aiWorker=new Worker(url)}catch(error){URL.revokeObjectURL(url);return chooseSearchMoveTimed(board,aiSide)}
+    URL.revokeObjectURL(url);
+    return new Promise(resolve=>{
+      const worker=aiWorker;
+      worker.onmessage=({data})=>{
+        worker.terminate();if(aiWorker===worker)aiWorker=null;
+        if(data.error){resolve(chooseSearchMoveTimed(board,aiSide));return}
+        lastAiDepth=data.depth;lastAiSource=data.source;resolve(data.move);
+      };
+      worker.onerror=()=>{worker.terminate();if(aiWorker===worker)aiWorker=null;resolve(chooseSearchMoveTimed(board,aiSide))};
+      worker.postMessage({board,aiSide,difficulty,aiStyle,positionHistory,moveHistory});
+    });
+  }
 
   function cancelAiAnimation(){
+    if(aiWorker){aiWorker.terminate();aiWorker=null}
     if(aiAnimationFrame){cancelAnimationFrame(aiAnimationFrame);aiAnimationFrame=null}
     aiAnimating=false;aiAnimation=null;
   }
@@ -720,7 +721,7 @@
     draw();
 
     // 先停一停，讓玩家看清楚電腦選了哪隻棋
-    aiTimer=setTimeout(()=>{
+    aiTimer=setTimeout(async()=>{
       if(gameOver||gameMode!=='pvc'||turn!==aiSide){cancelAiAnimation();updateThinkingUI();draw();return}
       if(aiAnimation)aiAnimation.holding=false;
       const duration=720;
@@ -745,9 +746,10 @@
     cancelAiAnimation();
     aiThinking=true;updateThinkingUI();
     updateUI('🤖 電腦思考中',`${aiSide===RED?'紅方':'黑方'}正在比較多個候選走法…`);
-    aiTimer=setTimeout(()=>{
+    aiTimer=setTimeout(async()=>{
       if(gameOver||gameMode!=='pvc'||turn!==aiSide){aiThinking=false;updateThinkingUI();return}
-      const mv=chooseAiMove();
+      const mv=await chooseAiMove();
+      if(!aiThinking||gameOver||gameMode!=='pvc'||turn!==aiSide)return;
       if(!mv){
         aiThinking=false;updateThinkingUI();gameOver=true;
         const winnerSide=playerSide;
@@ -762,7 +764,7 @@
   function undoStepCount(){if(gameMode==='pvp')return moveHistory.length?1:0;for(let i=moveHistory.length-1;i>=0;i--){if(moveHistory[i].turn===playerSide)return moveHistory.length-i}return 0}
   function canUndoNow(){return undoRemaining>0&&!aiThinking&&!aiAnimating&&undoStepCount()>0}
   function updateUndoUI(){undoCountText.textContent=`${undoRemaining} / ${UNDO_LIMIT}`;undoBtn.textContent=`↶ 悔棋 (${undoRemaining})`;undoBtn.disabled=!canUndoNow()}
-  function updateModeSummary(){modeText.textContent=gameMode==='pvp'?'玩家 VS 玩家':'玩家 VS 電腦';sideText.textContent=gameMode==='pvp'?'雙方玩家':(playerSide===RED?'紅方':'黑方');difficultyText.textContent=gameMode==='pvp'?'—':({easy:'簡單',normal:'普通',hard:'困難'}[difficulty]);handicapText.textContent=handicapLabel();updateUndoUI()}
+  function updateModeSummary(){modeText.textContent=gameMode==='pvp'?'玩家 VS 玩家':'玩家 VS 電腦';sideText.textContent=gameMode==='pvp'?'雙方玩家':(playerSide===RED?'紅方':'黑方');difficultyText.textContent=gameMode==='pvp'?'—':`第 ${difficulty} 級／10 級`;handicapText.textContent=handicapLabel();updateUndoUI()}
   function updateThinkingUI(){thinkingOverlay.classList.toggle('show',aiThinking);canvas.style.cursor=(aiThinking||aiAnimating)?'wait':'pointer';updateUndoUI()}
   function updateUI(title,text){const name=turn===RED?'紅方':'黑方';turnValue.textContent=name;turnValue.className=`turn-value ${turn}`;if(gameOver)topStatus.textContent=title;else if(aiThinking)topStatus.textContent='電腦思考中';else if(aiAnimating)topStatus.textContent='電腦行棋中';else if(gameMode==='pvc')topStatus.textContent=turn===playerSide?`${name} · 你的回合`:`${name} · 電腦回合`;else topStatus.textContent=`${name}${isInCheck(board,turn)?' · 被將軍':'回合'}`;topSub.textContent=text;message.innerHTML=`<strong>${title}</strong>${text}`;updateUndoUI()}
   function renderHistory(){
@@ -796,9 +798,9 @@
     hideWinner();if(aiTimer){clearTimeout(aiTimer);aiTimer=null}cancelAiAnimation();
     const fd=new FormData(setupForm);gameMode=fd.get('mode')||'pvp';undoRemaining=UNDO_LIMIT;
     if(gameMode==='pvc'){
-      playerSide=fd.get('playerSide')||RED;aiSide=other(playerSide);difficulty=fd.get('difficulty')||'normal';aiStyle=randomAiStyle();handicapSide='none';handicapPiece='leftRook';boardFlipped=playerSide===BLACK;
+      playerSide=fd.get('playerSide')||RED;aiSide=other(playerSide);difficulty=Math.max(1,Math.min(10,Number(fd.get('difficulty'))||5));aiStyle=randomAiStyle();handicapSide='none';handicapPiece='leftRook';boardFlipped=playerSide===BLACK;
     }else{
-      playerSide=RED;aiSide=BLACK;difficulty='normal';aiStyle=randomAiStyle();handicapSide=fd.get('handicapSide')||'none';handicapPiece=fd.get('handicapPiece')||'leftRook';boardFlipped=false;
+      playerSide=RED;aiSide=BLACK;difficulty=5;aiStyle=randomAiStyle();handicapSide=fd.get('handicapSide')||'none';handicapPiece=fd.get('handicapPiece')||'leftRook';boardFlipped=false;
     }
     board=initialBoard();if(gameMode==='pvp'&&handicapSide!=='none')applyHandicap(board,handicapSide,handicapPiece);
     turn=RED;selected=null;legalMoves=[];moveHistory=[];positionHistory=[positionKey(board,turn)];gameOver=false;aiThinking=false;setupModal.classList.add('hidden');updateModeSummary();renderHistory();updateThinkingUI();
