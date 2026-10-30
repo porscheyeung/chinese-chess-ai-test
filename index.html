@@ -355,20 +355,19 @@
 
   const SEARCH_TIMEOUT={};
   const AI_LEVELS=[
-    {time:60,maxDepth:1,q:0,error:500,book:0},
-    {time:100,maxDepth:1,q:0,error:320,book:0},
-    {time:160,maxDepth:2,q:1,error:210,book:.15},
-    {time:250,maxDepth:2,q:2,error:130,book:.3},
-    {time:400,maxDepth:3,q:3,error:75,book:.45},
-    {time:650,maxDepth:4,q:4,error:40,book:.6},
-    {time:1000,maxDepth:5,q:5,error:22,book:.7},
-    {time:1500,maxDepth:6,q:6,error:12,book:.8},
-    {time:2200,maxDepth:7,q:7,error:5,book:.9},
-    {time:3200,maxDepth:8,q:8,error:0,book:1}
+    {time:150,maxDepth:1,q:0,error:600,book:0},
+    {time:220,maxDepth:1,q:1,error:320,book:0},
+    {time:320,maxDepth:2,q:1,error:190,book:.15},
+    {time:450,maxDepth:3,q:1,error:120,book:.3},
+    {time:650,maxDepth:4,q:1,error:70,book:.45},
+    {time:900,maxDepth:5,q:1,error:38,book:.6},
+    {time:1300,maxDepth:6,q:1,error:18,book:.7},
+    {time:1800,maxDepth:8,q:1,error:8,book:.8},
+    {time:2600,maxDepth:12,q:1,error:3,book:.9},
+    {time:4000,maxDepth:40,q:1,error:0,book:1}
   ];
   const levelConfig=()=>AI_LEVELS[difficulty-1]||AI_LEVELS[4];
-  let searchDeadline=Infinity,searchNodes=0,transpositionTable=new Map();
-  let searchPath=new Map(),searchIteration=1;
+  let searchDeadline=Infinity,searchNodes=0;
 
   function styleParams(){
     if(aiStyle==='aggressive')return{attack:1.34,safety:.82,variety:1.25};
@@ -377,201 +376,433 @@
     return{attack:1.0,safety:1.0,variety:1.0};
   }
 
-  function positionalBonus(p,r,c){
-    let bonus=0;
-    if(p.type==='pawn'){
-      if(crossedRiver(p.side,r))bonus+=62;
-      if(c>=3&&c<=5)bonus+=12;
-      const advance=p.side===RED?(6-r):(r-3);
-      bonus+=Math.max(0,advance)*5;
-    }else if(p.type==='horse'){
-      const d=Math.abs(c-4)+Math.abs(r-4.5);
-      bonus+=Math.max(0,48-d*7);
-      if(c===0||c===8)bonus-=18;
-    }else if(p.type==='rook'){
-      if(c>=2&&c<=6)bonus+=10;
-    }else if(p.type==='cannon'){
-      if(c>=2&&c<=6)bonus+=13;
-    }else if(p.type==='advisor'){
-      if(c===4)bonus+=8;
+  // ===== 搜尋引擎：一維棋盤、增量評分、Zobrist 置換表、PVS、空著裁剪、將軍延伸、長將判斷 =====
+  const E_K=1,E_A=2,E_E=3,E_H=4,E_R=5,E_C=6,E_P=7;
+  const E_TYPE={king:E_K,advisor:E_A,elephant:E_E,horse:E_H,rook:E_R,cannon:E_C,pawn:E_P};
+  const E_NAME=['','king','advisor','elephant','horse','rook','cannon','pawn'];
+  const E_MAT_MG=[0,0,200,200,400,900,450,100];
+  const E_MAT_EG=[0,0,180,180,450,950,400,130];
+  const E_PHASE=[0,0,0,0,1,2,1,0];
+  const E_ORD=[0,9,2,2,4,9,5,1];
+  const E_INF=32000,E_MATE=30000,E_WIN=29000,E_MAXPLY=64,E_PERPETUAL=5000;
+  // 位置分以紅方視角列出，第 0 行為對方底線；黑方使用上下鏡像。
+  const E_PST={
+    [E_K]:[
+      [0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,-28,-26,-28,0,0,0],[0,0,0,-16,-12,-16,0,0,0],[0,0,0,-6,0,-6,0,0,0]
+    ],
+    [E_A]:[
+      [0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,-4,0,-4,0,0,0],[0,0,0,0,5,0,0,0,0],[0,0,0,0,0,0,0,0,0]
+    ],
+    [E_E]:[
+      [0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],
+      [0,0,-3,0,0,0,-3,0,0],[0,0,0,0,0,0,0,0,0],[-3,0,0,0,5,0,0,0,-3],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]
+    ],
+    [E_H]:[
+      [0,-4,0,0,0,0,0,-4,0],
+      [0,4,18,8,-6,8,18,4,0],
+      [4,10,16,20,14,20,16,10,4],
+      [4,14,18,22,20,22,18,14,4],
+      [2,10,16,18,18,18,16,10,2],
+      [0,8,12,14,14,14,12,8,0],
+      [0,4,10,10,8,10,10,4,0],
+      [-2,2,6,6,4,6,6,2,-2],
+      [-4,-2,2,0,-20,0,2,-2,-4],
+      [-6,-6,-2,-4,-8,-4,-2,-6,-6]
+    ],
+    [E_R]:[
+      [8,10,9,14,14,14,9,10,8],
+      [8,14,10,16,24,16,10,14,8],
+      [6,10,8,14,16,14,8,10,6],
+      [8,14,14,16,16,16,14,14,8],
+      [10,12,12,16,16,16,12,12,10],
+      [8,12,12,16,16,16,12,12,8],
+      [4,10,6,14,14,14,6,10,4],
+      [-2,8,4,12,12,12,4,8,-2],
+      [4,8,6,12,0,12,6,8,4],
+      [-6,6,4,12,0,12,4,6,-6]
+    ],
+    [E_C]:[
+      [6,4,0,-6,-8,-6,0,4,6],
+      [2,2,0,-4,-10,-4,0,2,2],
+      [1,1,0,-2,-4,-2,0,1,1],
+      [0,2,2,0,4,0,2,2,0],
+      [0,0,0,0,6,0,0,0,0],
+      [-2,0,4,0,8,0,4,0,-2],
+      [0,0,0,0,6,0,0,0,0],
+      [2,2,4,6,14,6,4,2,2],
+      [0,2,2,2,6,2,2,2,0],
+      [0,0,2,4,4,4,2,0,0]
+    ],
+    [E_P]:[
+      [0,0,0,4,6,4,0,0,0],
+      [20,30,45,55,60,55,45,30,20],
+      [20,30,40,50,55,50,40,30,20],
+      [15,25,30,35,38,35,30,25,15],
+      [10,15,20,25,25,25,20,15,10],
+      [0,0,-2,0,8,0,-2,0,0],
+      [0,0,-2,0,4,0,-2,0,0],
+      [0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]
+    ]
+  };
+  const E_EG_SCALE=[0,.3,1,1,1,1,.5,1.4];
+  const E_VAL_MG=[],E_VAL_EG=[];
+  for(let p=0;p<16;p++){
+    E_VAL_MG.push(new Int16Array(90));E_VAL_EG.push(new Int16Array(90));
+    const t=p&7;if(!t)continue;
+    const black=p>=8,sign=black?-1:1;
+    for(let s=0;s<90;s++){
+      const r=(s/9)|0,c=s%9,pr=black?9-r:r,pst=E_PST[t][pr][c];
+      E_VAL_MG[p][s]=sign*(E_MAT_MG[t]+pst);
+      E_VAL_EG[p][s]=sign*(E_MAT_EG[t]+Math.round(pst*E_EG_SCALE[t]));
     }
-    return bonus;
   }
+  const E_KING_MV=[],E_ADV_MV=[],E_ELE_MV=[],E_HORSE_MV=[],E_HORSE_ATK=[],E_PAWN_MV=[[],[]],E_RAYS=[];
+  {
+    const ok=(r,c)=>r>=0&&r<10&&c>=0&&c<9,pal=(r,c)=>ok(r,c)&&c>=3&&c<=5&&(r<=2||r>=7);
+    for(let s=0;s<90;s++)E_HORSE_ATK.push([]);
+    for(let s=0;s<90;s++){
+      const r=(s/9)|0,c=s%9,k=[],a=[],e=[],h=[],rays=[];
+      if(pal(r,c)){
+        for(const[dr,dc]of[[1,0],[-1,0],[0,1],[0,-1]]){const rr=r+dr,cc=c+dc;if(pal(rr,cc)&&(rr<=2)===(r<=2))k.push(rr*9+cc)}
+        for(const[dr,dc]of[[1,1],[1,-1],[-1,1],[-1,-1]]){const rr=r+dr,cc=c+dc;if(pal(rr,cc)&&(rr<=2)===(r<=2))a.push(rr*9+cc)}
+      }
+      for(const[dr,dc]of[[2,2],[2,-2],[-2,2],[-2,-2]]){const rr=r+dr,cc=c+dc;if(ok(rr,cc)&&(rr<=4)===(r<=4))e.push(rr*9+cc,(r+dr/2)*9+c+dc/2)}
+      for(const[dr,dc]of[[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]){
+        const rr=r+dr,cc=c+dc;if(!ok(rr,cc))continue;
+        const leg=Math.abs(dr)===2?(r+dr/2)*9+c:r*9+c+dc/2,to=rr*9+cc;
+        h.push(to,leg);E_HORSE_ATK[to].push(s,leg);
+      }
+      const pr=[];if(r>0)pr.push(s-9);if(r<=4){if(c>0)pr.push(s-1);if(c<8)pr.push(s+1)}
+      const pb=[];if(r<9)pb.push(s+9);if(r>=5){if(c>0)pb.push(s-1);if(c<8)pb.push(s+1)}
+      for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){const ray=[];let rr=r+dr,cc=c+dc;while(ok(rr,cc)){ray.push(rr*9+cc);rr+=dr;cc+=dc}rays.push(ray)}
+      E_KING_MV.push(k);E_ADV_MV.push(a);E_ELE_MV.push(e);E_HORSE_MV.push(h);E_PAWN_MV[0].push(pr);E_PAWN_MV[1].push(pb);E_RAYS.push(rays);
+    }
+  }
+  const E_Z_LO=new Int32Array(16*90),E_Z_HI=new Int32Array(16*90);
+  let E_SIDE_LO=0,E_SIDE_HI=0;
+  {
+    let seed=0x9e3779b9|0;
+    const rnd=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return seed|0};
+    for(let i=0;i<16*90;i++){E_Z_LO[i]=rnd();E_Z_HI[i]=rnd()}
+    E_SIDE_LO=rnd();E_SIDE_HI=rnd();
+  }
+  const E_TT_SIZE=1<<18,E_TT_MASK=E_TT_SIZE-1,E_TT_EXACT=1,E_TT_LOWER=2,E_TT_UPPER=3;
+  let eTTLo=null,eTTHi,eTTMove,eTTScore,eTTDepth,eTTFlag;
+  const eb=new Int8Array(90),eCount=new Int8Array(16),eKing=[0,0];
+  const eHashStack=new Int32Array(1024),eHashHiStack=new Int32Array(1024),eCheckStack=new Uint8Array(1024),eCapStack=new Int8Array(1024);
+  const eHist=new Int32Array(16*90),eKillers=new Int32Array(E_MAXPLY*2+4);
+  let eSide=0,eHashLo=0,eHashHi=0,eMg=0,eEg=0,ePhase=0,eSp=0,eNodes=0,eUseQ=true;
 
-  function pieceActivity(b,r,c,p){
-    let n=0;
-    if(p.type==='rook'||p.type==='cannon'){
-      const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
-      for(const[dr,dc]of dirs){
-        let rr=r+dr,cc=c+dc,seen=0;
-        while(inside(rr,cc)){
-          if(!b[rr][cc]){if(seen===0)n++;rr+=dr;cc+=dc;continue}
-          seen++;
-          if(p.type==='rook'){if(b[rr][cc].side!==p.side)n+=2;break}
-          if(p.type==='cannon'){
-            if(seen===1){rr+=dr;cc+=dc;continue}
-            if(seen===2){if(b[rr][cc].side!==p.side)n+=2;break}
+  function eRemove(s,p){
+    eb[s]=0;const z=p*90+s;eHashLo^=E_Z_LO[z];eHashHi^=E_Z_HI[z];
+    eMg-=E_VAL_MG[p][s];eEg-=E_VAL_EG[p][s];ePhase-=E_PHASE[p&7];eCount[p]--;
+  }
+  function ePut(s,p){
+    eb[s]=p;const z=p*90+s;eHashLo^=E_Z_LO[z];eHashHi^=E_Z_HI[z];
+    eMg+=E_VAL_MG[p][s];eEg+=E_VAL_EG[p][s];ePhase+=E_PHASE[p&7];eCount[p]++;
+    if((p&7)===E_K)eKing[p>>3]=s;
+  }
+  function eMake(m){
+    const f=m>>7,t=m&127,p=eb[f],cap=eb[t];
+    if(cap)eRemove(t,cap);
+    eRemove(f,p);ePut(t,p);
+    eSide^=1;eHashLo^=E_SIDE_LO;eHashHi^=E_SIDE_HI;
+    eSp++;eHashStack[eSp]=eHashLo;eHashHiStack[eSp]=eHashHi;eCapStack[eSp]=cap;
+    return cap;
+  }
+  function eUnmake(m,cap){
+    const f=m>>7,t=m&127,p=eb[t];
+    eSp--;eSide^=1;eHashLo^=E_SIDE_LO;eHashHi^=E_SIDE_HI;
+    eRemove(t,p);ePut(f,p);
+    if(cap)ePut(t,cap);
+  }
+  function eAttacked(s,by){
+    const base=by?8:0,rays=E_RAYS[s];
+    for(let d=0;d<4;d++){
+      const ray=rays[d],n=ray.length;let i=0;
+      for(;i<n;i++){const q=eb[ray[i]];if(q){if(q===base+E_R||(d<2&&q===base+E_K))return true;break}}
+      for(i++;i<n;i++){const q=eb[ray[i]];if(q){if(q===base+E_C)return true;break}}
+    }
+    const ha=E_HORSE_ATK[s];
+    for(let i=0;i<ha.length;i+=2)if(eb[ha[i]]===base+E_H&&!eb[ha[i+1]])return true;
+    const r=(s/9)|0,c=s%9,pawn=base+E_P;
+    if(by===0){
+      if(r<9&&eb[s+9]===pawn)return true;
+      if(r<=4&&((c>0&&eb[s-1]===pawn)||(c<8&&eb[s+1]===pawn)))return true;
+    }else{
+      if(r>0&&eb[s-9]===pawn)return true;
+      if(r>=5&&((c>0&&eb[s-1]===pawn)||(c<8&&eb[s+1]===pawn)))return true;
+    }
+    return false;
+  }
+  function eGen(list,capsOnly){
+    const own=eSide?8:0;
+    for(let s=0;s<90;s++){
+      const p=eb[s];if(!p||(p&8)!==own)continue;
+      const from=s<<7;
+      switch(p&7){
+        case E_K:case E_A:{
+          const mv=(p&7)===E_K?E_KING_MV[s]:E_ADV_MV[s];
+          for(let i=0;i<mv.length;i++){const t=mv[i],q=eb[t];if(q?(q&8)!==own:!capsOnly)list.push(from|t)}
+          break;
+        }
+        case E_E:case E_H:{
+          const mv=(p&7)===E_E?E_ELE_MV[s]:E_HORSE_MV[s];
+          for(let i=0;i<mv.length;i+=2){if(eb[mv[i+1]])continue;const t=mv[i],q=eb[t];if(q?(q&8)!==own:!capsOnly)list.push(from|t)}
+          break;
+        }
+        case E_R:{
+          const rays=E_RAYS[s];
+          for(let d=0;d<4;d++){const ray=rays[d];for(let i=0;i<ray.length;i++){const t=ray[i],q=eb[t];if(!q){if(!capsOnly)list.push(from|t);continue}if((q&8)!==own)list.push(from|t);break}}
+          break;
+        }
+        case E_C:{
+          const rays=E_RAYS[s];
+          for(let d=0;d<4;d++){
+            const ray=rays[d],n=ray.length;let i=0;
+            for(;i<n;i++){if(eb[ray[i]])break;if(!capsOnly)list.push(from|ray[i])}
+            for(i++;i<n;i++){const q=eb[ray[i]];if(q){if((q&8)!==own)list.push(from|ray[i]);break}}
           }
-          rr+=dr;cc+=dc;
+          break;
+        }
+        default:{
+          const mv=E_PAWN_MV[own?1:0][s];
+          for(let i=0;i<mv.length;i++){const t=mv[i],q=eb[t];if(q?(q&8)!==own:!capsOnly)list.push(from|t)}
         }
       }
-    }else if(p.type==='horse'){
-      const jumps=[[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]];
-      for(const[dr,dc]of jumps){
-        const rr=r+dr,cc=c+dc;
-        if(inside(rr,cc)&&pseudoLegal(b,{r,c},{r:rr,c:cc},p))n++;
+    }
+    return list;
+  }
+  // 紅方視角評分：子力位置（開局／殘局漸變）＋「缺士怕車、缺象怕炮」＋無攻擊子力不能取勝。
+  function eEvaluateRed(){
+    const ph=Math.min(16,ePhase);
+    let s=(eMg*ph+eEg*(16-ph))/16;
+    const rA=eCount[E_A],rE=eCount[E_E],bA=eCount[8+E_A],bE=eCount[8+E_E];
+    const rR=eCount[E_R],rH=eCount[E_H],rC=eCount[E_C],bR=eCount[8+E_R],bH=eCount[8+E_H],bC=eCount[8+E_C];
+    s-=(2-rA)*(bR*28+bH*10)+(2-rE)*(bC*22+bH*6);
+    s+=(2-bA)*(rR*28+rH*10)+(2-bE)*(rC*22+rH*6);
+    if(rC&&bA+bE<=2)s+=rC*10;
+    if(bC&&rA+rE<=2)s-=bC*10;
+    const rAtk=rR+rH+rC+eCount[E_P],bAtk=bR+bH+bC+eCount[8+E_P];
+    if(s>0&&!rAtk)s/=8;
+    if(s<0&&!bAtk)s/=8;
+    return s|0;
+  }
+  function eEvalSide(){const s=eEvaluateRed();return(eSide?-s:s)+8}
+  function eInCheck(side){return eAttacked(eKing[side],side^1)}
+  function eHasPieces(side){const o=side?8:0;return eCount[o+E_R]+eCount[o+E_H]+eCount[o+E_C]>0}
+  function eLoad(b,side,history){
+    eb.fill(0);eCount.fill(0);eHashLo=0;eHashHi=0;eMg=0;eEg=0;ePhase=0;eKing[0]=eKing[1]=-1;
+    eSide=side===RED?0:1;
+    if(eSide){eHashLo^=E_SIDE_LO;eHashHi^=E_SIDE_HI}
+    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){const p=b[r][c];if(p)ePut(r*9+c,E_TYPE[p.type]|(p.side===RED?0:8))}
+    eSp=0;
+    for(const h of history||[]){if(eSp>=500)break;eHashStack[eSp]=h.lo;eHashHiStack[eSp]=h.hi;eCheckStack[eSp]=h.check;eCapStack[eSp]=0;eSp++}
+    eHashStack[eSp]=eHashLo;eHashHiStack[eSp]=eHashHi;eCapStack[eSp]=0;
+    eCheckStack[eSp]=eKing[eSide]>=0&&eInCheck(eSide)?1:0;
+  }
+  function eHistoryFromKeys(keys){
+    const code={R:E_R,H:E_H,E:E_E,A:E_A,K:E_K,C:E_C,P:E_P},out=[];
+    for(const key of (keys||[]).slice(-60)){
+      let lo=0,hi=0,kings=[-1,-1];const side=key[0]==='r'?0:1;
+      if(side){lo^=E_SIDE_LO;hi^=E_SIDE_HI}
+      const cells=key.slice(2);
+      eb.fill(0);
+      for(let s=0;s<90;s++){
+        const a=cells[s*2],t=cells[s*2+1];if(a==='.')continue;
+        const p=code[t]|(a==='r'?0:8);eb[s]=p;lo^=E_Z_LO[p*90+s];hi^=E_Z_HI[p*90+s];
+        if((p&7)===E_K)kings[p>>3]=s;
       }
-    }else if(p.type==='pawn'){
-      const forward=p.side===RED?-1:1;
-      if(inside(r+forward,c))n++;
-      if(crossedRiver(p.side,r)){if(c>0)n++;if(c<8)n++}
+      const check=kings[side]>=0&&eAttacked(kings[side],side^1)?1:0;
+      out.push({lo,hi,check});
     }
-    return n;
+    return out;
   }
-
-  function kingSafety(b,side){
-    const k=findKing(b,side);
-    if(!k)return-10000;
-    let score=0,advisors=0,elephants=0;
-    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
-      const p=b[r][c];
-      if(!p||p.side!==side)continue;
-      if(p.type==='advisor')advisors++;
-      if(p.type==='elephant')elephants++;
-    }
-    score+=advisors*22+elephants*12;
-    if(k.c===4)score+=8;
-    if(isInCheck(b,side))score-=150;
-    // 九宮附近仍有自己的士，額外加少量安全分。
-    for(let r=Math.max(0,k.r-1);r<=Math.min(ROWS-1,k.r+1);r++){
-      for(let c=Math.max(0,k.c-1);c<=Math.min(COLS-1,k.c+1);c++){
-        const p=b[r][c];
-        if(p&&p.side===side&&p.type==='advisor')score+=12;
+  function eRepetition(){
+    for(let j=eSp;j>0;j--){
+      if(eCapStack[j])return null;
+      const i=j-1,gap=eSp-i;
+      if(gap>=4&&!(gap&1)&&eHashStack[i]===eHashLo&&eHashHiStack[i]===eHashHi){
+        let oppPerpetual=true,ownPerpetual=true;
+        for(let k=eSp;k>i;k-=2)if(!eCheckStack[k]){oppPerpetual=false;break}
+        for(let k=eSp-1;k>i;k-=2)if(!eCheckStack[k]){ownPerpetual=false;break}
+        if(oppPerpetual&&!ownPerpetual)return E_PERPETUAL;
+        if(ownPerpetual&&!oppPerpetual)return -E_PERPETUAL;
+        return 0;
       }
     }
-    return score;
+    return null;
   }
-
-  function evaluateBoard(b,perspective){
-    if(!findKing(b,perspective))return-999999;
-    if(!findKing(b,other(perspective)))return 999999;
-    const sp=styleParams();
-    let score=0,myActivity=0,oppActivity=0;
-    let material=0;
-    for(const row of b)for(const p of row)if(p&&['rook','horse','cannon'].includes(p.type))material++;
-    const endgame=1-Math.min(1,material/12);
-
-    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
-      const p=b[r][c];if(!p)continue;
-      let v=PIECE_VALUE[p.type]+positionalBonus(p,r,c);
-      const advance=p.side===RED?9-r:r;
-      if(p.type==='horse')v+=endgame*65;
-      if(p.type==='cannon')v-=endgame*70;
-      if(p.type==='pawn'){
-        if(crossedRiver(p.side,r))v+=endgame*55;
-        if(r===0||r===9)v-=65;
-        for(const dc of [-1,1]){
-          const q=b[r][c+dc];
-          if(q&&q.side===p.side&&q.type==='pawn')v+=18;
-        }
-      }
-      if(p.type==='rook'&&advance>0)v+=(1-endgame)*22;
-      if(p.type==='horse'&&advance>=2)v+=(1-endgame)*18;
-      const act=pieceActivity(b,r,c,p);
-      if(p.type==='rook')v+=act*4;
-      else if(p.type==='horse')v+=act*5;
-      else if(p.type==='cannon')v+=act*3;
-      else if(p.type==='pawn')v+=act*2;
-      if(p.side===perspective){score+=v;myActivity+=act}else{score-=v;oppActivity+=act}
+  function eTick(){if(((++eNodes)&1023)===0&&performance.now()>searchDeadline)throw SEARCH_TIMEOUT}
+  function eScoreMoves(moves,ttMove,ply){
+    const scores=new Array(moves.length),k0=eKillers[ply*2],k1=eKillers[ply*2+1];
+    for(let i=0;i<moves.length;i++){
+      const m=moves[i],cap=eb[m&127],p=eb[m>>7];
+      scores[i]=m===ttMove?1e9:cap?1e8+E_ORD[cap&7]*16-E_ORD[p&7]:m===k0?9e7:m===k1?8e7:eHist[p*90+(m&127)];
     }
-
-    const mySafe=kingSafety(b,perspective),oppSafe=kingSafety(b,other(perspective));
-    score+=(mySafe-oppSafe)*sp.safety;
-    score+=(myActivity-oppActivity)*2.2;
-
-    if(isInCheck(b,other(perspective)))score+=95*sp.attack;
-    if(isInCheck(b,perspective))score-=125*sp.safety;
-    return score;
+    return scores;
   }
-
-  function moveTacticalScore(b,mv,side){
-    let s=0;
-    if(mv.captured)s+=PIECE_VALUE[mv.captured.type]*12-PIECE_VALUE[mv.piece.type];
-    const nb=simulateMove(b,mv.from,mv.to);
-    if(!findKing(nb,other(side)))s+=1000000;
-    else if(isInCheck(nb,other(side)))s+=420*styleParams().attack;
-    if(mv.piece.type==='pawn'&&crossedRiver(side,mv.to.r))s+=75;
-    s-=Math.abs(mv.to.c-4)*2;
-    return s;
+  function ePick(moves,scores,i){
+    let bi=i;for(let k=i+1;k<moves.length;k++)if(scores[k]>scores[bi])bi=k;
+    if(bi!==i){const m=moves[i];moves[i]=moves[bi];moves[bi]=m;const s=scores[i];scores[i]=scores[bi];scores[bi]=s}
+    return moves[i];
   }
-
-  function orderedMoves(b,side,limit=Infinity,tacticalOnly=false){
-    let moves=generateAllMoves(b,side);
-    if(tacticalOnly)moves=moves.filter(m=>m.captured);
-    return moves.map(move=>({move,score:moveTacticalScore(b,move,side)}))
-      .sort((a,z)=>z.score-a.score).slice(0,limit).map(x=>x.move);
-  }
-
-  function checkSearchTime(){
-    searchNodes++;
-    if(performance.now()>searchDeadline)throw SEARCH_TIMEOUT;
-  }
-
-  function quiescence(b,alpha,beta,maxSide,sideToMove,qDepth,ply=0){
-    checkSearchTime();
-    if(!findKing(b,sideToMove))return sideToMove===maxSide?-900000+ply:900000-ply;
-    const moves=orderedMoves(b,sideToMove);
-    if(!moves.length)return sideToMove===maxSide?-900000+ply:900000-ply;
-    const checked=isInCheck(b,sideToMove),maximizing=sideToMove===maxSide;
-    const stand=evaluateBoard(b,maxSide);
-    if(qDepth<=0&&!checked)return stand;
-    if(ply>=24)return stand;
-    let best=checked?(maximizing?-Infinity:Infinity):stand;
-    if(!checked){
-      if(maximizing){if(best>=beta)return best;alpha=Math.max(alpha,best)}
-      else{if(best<=alpha)return best;beta=Math.min(beta,best)}
+  function eQuiesce(alpha,beta,ply){
+    eTick();
+    const inCheck=eCheckStack[eSp];
+    if(ply>=E_MAXPLY-1)return eEvalSide();
+    let best=-E_INF,stand=0;
+    if(!inCheck){stand=eEvalSide();if(stand>=beta)return stand;if(stand>alpha)alpha=stand;best=stand}
+    const moves=eGen([],!inCheck),scores=eScoreMoves(moves,0,Math.min(ply,E_MAXPLY));
+    let legal=0;
+    for(let i=0;i<moves.length;i++){
+      const m=ePick(moves,scores,i),target=eb[m&127];
+      if(!inCheck&&stand+E_MAT_MG[target&7]+220<alpha)continue;
+      const cap=eMake(m);
+      if(eInCheck(eSide^1)){eUnmake(m,cap);continue}
+      legal++;
+      eCheckStack[eSp]=eInCheck(eSide)?1:0;
+      const v=-eQuiesce(-beta,-alpha,ply+1);
+      eUnmake(m,cap);
+      if(v>best){best=v;if(v>alpha){alpha=v;if(v>=beta)break}}
     }
-    for(const mv of moves){
-      if(!checked&&!mv.captured)continue;
-      const nb=simulateMove(b,mv.from,mv.to),key=positionKey(nb,other(sideToMove));
-      const count=(searchPath.get(key)||0);
-      let value;
-      if(count>=2)value=0;
-      else{
-        searchPath.set(key,count+1);
-        try{value=quiescence(nb,alpha,beta,maxSide,other(sideToMove),qDepth-1,ply+1)}
-        finally{if(count)searchPath.set(key,count);else searchPath.delete(key)}
-      }
-      best=maximizing?Math.max(best,value):Math.min(best,value);
-      if(maximizing)alpha=Math.max(alpha,best);else beta=Math.min(beta,best);
-      if(alpha>=beta)break;
-    }
+    if(inCheck&&!legal)return -E_MATE+ply;
     return best;
   }
-
-  function minimax(b,depth,alpha,beta,maxSide,sideToMove,ply=0){
-    checkSearchTime();
-    if(!findKing(b,sideToMove))return sideToMove===maxSide?-900000+ply:900000-ply;
-    const key=positionKey(b,sideToMove),count=searchPath.get(key)||0;
-    if(count>=2)return 0;
-    searchPath.set(key,count+1);
-    try{
-      if(depth<=0)return quiescence(b,alpha,beta,maxSide,sideToMove,(searchIteration===1?0:levelConfig().q),ply);
-      const moves=orderedMoves(b,sideToMove);
-      if(!moves.length)return sideToMove===maxSide?-900000+ply:900000-ply;
-      const hint=transpositionTable.get(key);
-      if(hint){const i=moves.findIndex(m=>moveSignature(m)===hint);if(i>0)moves.unshift(moves.splice(i,1)[0])}
-      const maximizing=sideToMove===maxSide;
-      let best=maximizing?-Infinity:Infinity,bestMove=null;
-      for(const mv of moves){
-        const value=minimax(simulateMove(b,mv.from,mv.to),depth-1,alpha,beta,maxSide,other(sideToMove),ply+1);
-        if(bestMove===null||(maximizing?value>best:value<best)){best=value;bestMove=mv}
-        if(maximizing)alpha=Math.max(alpha,best);else beta=Math.min(beta,best);
-        if(alpha>=beta)break;
+  function eHorizon(alpha,beta,ply){
+    if(eUseQ)return eQuiesce(alpha,beta,ply);
+    eTick();
+    if(eCheckStack[eSp]){const moves=eGen([],false);for(const m of moves){const cap=eMake(m),bad=eInCheck(eSide^1);eUnmake(m,cap);if(!bad)return eEvalSide()}return -E_MATE+ply}
+    return eEvalSide();
+  }
+  function eSearch(depth,alpha,beta,ply,allowNull){
+    const pv=beta-alpha>1;
+    const rep=eRepetition();
+    if(rep!==null)return rep;
+    if(alpha<-E_MATE+ply)alpha=-E_MATE+ply;
+    if(beta>E_MATE-ply-1)beta=E_MATE-ply-1;
+    if(alpha>=beta)return alpha;
+    const inCheck=eCheckStack[eSp];
+    if(inCheck&&ply<E_MAXPLY-4)depth++;
+    if(depth<=0||ply>=E_MAXPLY-2)return eHorizon(alpha,beta,ply);
+    eTick();
+    const idx=eHashLo&E_TT_MASK;let ttMove=0;
+    if(eTTLo[idx]===eHashLo&&eTTHi[idx]===eHashHi){
+      ttMove=eTTMove[idx];
+      if(!pv&&eTTDepth[idx]>=depth){
+        let v=eTTScore[idx];if(v>E_WIN)v-=ply;else if(v<-E_WIN)v+=ply;
+        const f=eTTFlag[idx];
+        if(f===E_TT_EXACT||(f===E_TT_LOWER&&v>=beta)||(f===E_TT_UPPER&&v<=alpha))return v;
       }
-      if(bestMove)transpositionTable.set(key,moveSignature(bestMove));
-      return best;
-    }finally{if(count)searchPath.set(key,count);else searchPath.delete(key)}
+    }
+    if(allowNull&&!pv&&!inCheck&&depth>=3&&eHasPieces(eSide)&&eEvalSide()>=beta){
+      const R=depth>=6?3:2;
+      eSide^=1;eHashLo^=E_SIDE_LO;eHashHi^=E_SIDE_HI;
+      eSp++;eHashStack[eSp]=eHashLo;eHashHiStack[eSp]=eHashHi;eCapStack[eSp]=-1;eCheckStack[eSp]=0;
+      const v=-eSearch(depth-1-R,-beta,-beta+1,ply+1,false);
+      eSp--;eSide^=1;eHashLo^=E_SIDE_LO;eHashHi^=E_SIDE_HI;
+      if(v>=beta)return v>E_WIN?beta:v;
+    }
+    const moves=eGen([],false),scores=eScoreMoves(moves,ttMove,ply);
+    const origAlpha=alpha;let best=-E_INF,bestMove=0,legal=0;
+    for(let i=0;i<moves.length;i++){
+      const m=ePick(moves,scores,i);
+      const cap=eMake(m);
+      if(eInCheck(eSide^1)){eUnmake(m,cap);continue}
+      legal++;
+      const gives=eInCheck(eSide);eCheckStack[eSp]=gives?1:0;
+      let v;
+      if(legal===1)v=-eSearch(depth-1,-beta,-alpha,ply+1,true);
+      else{
+        let r=0;
+        if(depth>=3&&legal>4&&!inCheck&&!gives&&!cap&&scores[i]<8e7)r=legal>12&&depth>=5?2:1;
+        v=-eSearch(depth-1-r,-alpha-1,-alpha,ply+1,true);
+        if(v>alpha&&r)v=-eSearch(depth-1,-alpha-1,-alpha,ply+1,true);
+        if(v>alpha&&v<beta)v=-eSearch(depth-1,-beta,-alpha,ply+1,true);
+      }
+      eUnmake(m,cap);
+      if(v>best){
+        best=v;bestMove=m;
+        if(v>alpha){
+          alpha=v;
+          if(v>=beta){
+            if(!cap){
+              if(eKillers[ply*2]!==m){eKillers[ply*2+1]=eKillers[ply*2];eKillers[ply*2]=m}
+              const h=eb[m>>7]*90+(m&127);eHist[h]+=depth*depth;if(eHist[h]>1e7)for(let k=0;k<eHist.length;k++)eHist[k]>>=1;
+            }
+            break;
+          }
+        }
+      }
+    }
+    if(!legal)return -E_MATE+ply;
+    let stored=best;if(stored>E_WIN)stored+=ply;else if(stored<-E_WIN)stored-=ply;
+    eTTLo[idx]=eHashLo;eTTHi[idx]=eHashHi;eTTMove[idx]=bestMove;eTTScore[idx]=stored;eTTDepth[idx]=depth;
+    eTTFlag[idx]=best>=beta?E_TT_LOWER:best>origAlpha?E_TT_EXACT:E_TT_UPPER;
+    return best;
+  }
+  function eToMove(b,m){
+    const f=m>>7,t=m&127,from={r:(f/9)|0,c:f%9},to={r:(t/9)|0,c:t%9};
+    return{from,to,piece:b[from.r][from.c],captured:b[to.r][to.c]};
+  }
+  function engineLegalMoves(){
+    const out=[];
+    for(const m of eGen([],false)){const cap=eMake(m),bad=eInCheck(eSide^1);eUnmake(m,cap);if(!bad)out.push(m)}
+    return out;
+  }
+  // 回傳每個根走法的分數（以走棋方視角），供不同級別按容許分差選棋。
+  function engineSearchRoot(b,side,config,history){
+    if(!eTTLo){eTTLo=new Int32Array(E_TT_SIZE);eTTHi=new Int32Array(E_TT_SIZE);eTTMove=new Int32Array(E_TT_SIZE);eTTScore=new Int32Array(E_TT_SIZE);eTTDepth=new Int8Array(E_TT_SIZE);eTTFlag=new Uint8Array(E_TT_SIZE)}
+    else{eTTLo.fill(0);eTTHi.fill(0);eTTFlag.fill(0)}
+    eHist.fill(0);eKillers.fill(0);eNodes=0;eUseQ=!!config.q;
+    const started=performance.now();
+    searchDeadline=started+config.time;
+    eLoad(b,side,history);
+    const allowed=new Set(playableRootMoves(b,side).map(moveSignature));
+    let order=engineLegalMoves().filter(m=>allowed.has(moveSignature(eToMove(b,m))));
+    if(!order.length)return{scored:[],depth:0};
+    let completed=order.map(m=>{const cap=eMake(m),v=-eEvalSide();eUnmake(m,cap);return{m,score:v}}).sort((a,z)=>z.score-a.score);
+    order=completed.map(x=>x.m);
+    let completedDepth=0;
+    const rootSp=eSp;
+    for(let depth=1;depth<=config.maxDepth;depth++){
+      const current=[];let best=-E_INF;
+      try{
+        for(const m of order){
+          const cap=eMake(m);
+          eCheckStack[eSp]=eInCheck(eSide)?1:0;
+          let v;
+          if(config.error>0){
+            const floor=best===-E_INF?-E_INF:best-config.error-1;
+            v=-eSearch(depth-1,-E_INF,-floor,1,true);
+          }else if(best===-E_INF)v=-eSearch(depth-1,-E_INF,E_INF,1,true);
+          else{
+            v=-eSearch(depth-1,-best-1,-best,1,true);
+            if(v>best)v=-eSearch(depth-1,-E_INF,-best,1,true);
+          }
+          eUnmake(m,cap);
+          current.push({m,score:v});if(v>best)best=v;
+        }
+      }catch(err){
+        if(err!==SEARCH_TIMEOUT)throw err;
+        eLoad(b,side,history);
+        break;
+      }
+      eSp=rootSp;
+      current.sort((a,z)=>z.score-a.score);
+      completed=current;completedDepth=depth;order=current.map(x=>x.m);
+      if(Math.abs(best)>E_WIN)break;
+      if(performance.now()-started>config.time*.45)break;
+    }
+    searchNodes=eNodes;
+    return{scored:completed.map(x=>({move:eToMove(b,x.m),score:x.score})),depth:completedDepth};
+  }
+  function evaluateBoard(b,perspective){
+    eLoad(b,perspective,[]);
+    const s=eEvaluateRed();
+    return perspective===RED?s:(0-s)|0;
   }
 
   function moveSignature(m){return `${m.from.r},${m.from.c}-${m.to.r},${m.to.c}`}
@@ -641,8 +872,9 @@
   function selectNearBest(scored){
     scored.sort((a,z)=>z.score-a.score);
     const best=scored[0].score,threshold=levelConfig().error;
-    if(!threshold||Math.abs(best)>800000)return scored[0].move;
-    const pool=scored.filter(x=>best-x.score<=threshold);
+    if(!threshold||Math.abs(best)>E_WIN)return scored[0].move;
+    const pool=scored.filter(x=>best-x.score<=threshold&&x.score>-E_WIN);
+    if(!pool.length)return scored[0].move;
     const weights=pool.map(x=>Math.exp((x.score-best)/Math.max(1,threshold*.55)));
     let pick=Math.random()*weights.reduce((a,b)=>a+b,0);
     for(let i=0;i<pool.length;i++){pick-=weights[i];if(pick<=0)return pool[i].move}
@@ -651,29 +883,12 @@
 
   function chooseSearchMoveTimed(b,side){
     const config=levelConfig();
-    searchDeadline=performance.now()+config.time;
-    searchNodes=0;transpositionTable=new Map();searchPath=new Map();
-    const rootMoves=orderedMoves(b,side).filter(m=>!isForbiddenRepeatMove(b,side,m.from,m.to));
-    if(!rootMoves.length)return null;
-    let completed=rootMoves.map(move=>({move,score:evaluateBoard(simulateMove(b,move.from,move.to),side)}));
-    let completedDepth=0;
-    for(let depth=1;depth<=config.maxDepth;depth++){
-      searchIteration=depth;
-      const current=[];
-      rootMoves.sort((a,z)=>completed.find(x=>moveSignature(x.move)===moveSignature(z)).score-completed.find(x=>moveSignature(x.move)===moveSignature(a)).score);
-      try{
-        for(const mv of rootMoves){
-          checkSearchTime();
-          const nb=simulateMove(b,mv.from,mv.to);
-          const score=minimax(nb,depth-1,-Infinity,Infinity,side,other(side),1)-repetitionPenalty(nb,other(side));
-          current.push({move:mv,score});
-        }
-        completed=current;completedDepth=depth;
-      }catch(err){if(err!==SEARCH_TIMEOUT)throw err;break}
-      if(Math.abs(Math.max(...completed.map(x=>x.score)))>800000)break;
-    }
-    lastAiDepth=completedDepth;lastAiSource='search';
-    if(completedDepth&&Math.random()<config.book){
+    const history=eHistoryFromKeys((positionHistory||[]).slice(0,-1));
+    const result=engineSearchRoot(b,side,config,history);
+    if(!result.scored.length)return null;
+    const completed=result.scored;
+    lastAiDepth=result.depth;lastAiSource='search';
+    if(result.depth&&Math.random()<config.book){
       const book=chooseOpeningMove(b,side);
       if(book){
         const entry=completed.find(x=>moveSignature(x.move)===moveSignature(book));
